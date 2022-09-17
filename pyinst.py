@@ -1,34 +1,32 @@
 #!/usr/bin/env python3
-# coding: utf-8
+
+# Allow direct execution
 import os
-import platform
 import sys
-from PyInstaller.utils.hooks import collect_submodules
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-OS_NAME = platform.system()
-if OS_NAME == 'Windows':
-    from PyInstaller.utils.win32.versioninfo import (
-        VarStruct, VarFileInfo, StringStruct, StringTable,
-        StringFileInfo, FixedFileInfo, VSVersionInfo, SetVersion,
-    )
-elif OS_NAME == 'Darwin':
-    pass
-else:
-    raise Exception('{OS_NAME} is not supported')
+import platform
 
-ARCH = platform.architecture()[0][:2]
+from PyInstaller.__main__ import run as run_pyinstaller
+
+from devscripts.utils import read_version
+
+OS_NAME, MACHINE, ARCH = sys.platform, platform.machine(), platform.architecture()[0][:2]
+if MACHINE in ('x86_64', 'AMD64') or ('i' in MACHINE and '86' in MACHINE):
+    # NB: Windows x86 has MACHINE = AMD64 irrespective of bitness
+    MACHINE = 'x86' if ARCH == '32' else ''
 
 
 def main():
-    opts = parse_options()
-    version = read_version()
+    opts, version = parse_options(), read_version()
 
-    suffix = '_macos' if OS_NAME == 'Darwin' else '_x86' if ARCH == '32' else ''
-    final_file = 'dist/%syt-dlp%s%s' % (
-        'yt-dlp/' if '--onedir' in opts else '', suffix, '.exe' if OS_NAME == 'Windows' else '')
+    onedir = '--onedir' in opts or '-D' in opts
+    if not onedir and '-F' not in opts and '--onefile' not in opts:
+        opts.append('--onefile')
 
-    print(f'Building yt-dlp v{version} {ARCH}bit for {OS_NAME} with options {opts}')
+    name, final_file = exe(onedir)
+    print(f'Building yt-dlp v{version} for {OS_NAME} {platform.machine()} with options {opts}')
     print('Remember to update the version using  "devscripts/update-version.py"')
     if not os.path.isfile('yt_dlp/extractor/lazy_extractors.py'):
         print('WARNING: Building without lazy_extractors. Run  '
@@ -36,7 +34,7 @@ def main():
     print(f'Destination: {final_file}\n')
 
     opts = [
-        f'--name=yt-dlp{suffix}',
+        f'--name={name}',
         '--icon=devscripts/logo.ico',
         '--upx-exclude=vcruntime140.dll',
         '--noconfirm',
@@ -44,28 +42,35 @@ def main():
         *opts,
         'yt_dlp/__main__.py',
     ]
+
     print(f'Running PyInstaller with {opts}')
-
-    import PyInstaller.__main__
-
-    PyInstaller.__main__.run(opts)
-
+    run_pyinstaller(opts)
     set_version_info(final_file, version)
 
 
 def parse_options():
-    # Compatability with older arguments
+    # Compatibility with older arguments
     opts = sys.argv[1:]
     if opts[0:1] in (['32'], ['64']):
         if ARCH != opts[0]:
             raise Exception(f'{opts[0]}bit executable cannot be built on a {ARCH}bit system')
         opts = opts[1:]
-    return opts or ['--onefile']
+    return opts
 
 
-def read_version():
-    exec(compile(open('yt_dlp/version.py').read(), 'yt_dlp/version.py', 'exec'))
-    return locals()['__version__']
+def exe(onedir):
+    """@returns (name, path)"""
+    name = '_'.join(filter(None, (
+        'yt-dlp',
+        {'win32': '', 'darwin': 'macos'}.get(OS_NAME, OS_NAME),
+        MACHINE
+    )))
+    return name, ''.join(filter(None, (
+        'dist/',
+        onedir and f'{name}/',
+        name,
+        OS_NAME == 'win32' and '.exe'
+    )))
 
 
 def version_to_list(version):
@@ -74,10 +79,12 @@ def version_to_list(version):
 
 
 def dependency_options():
-    dependencies = [pycryptodome_module(), 'mutagen', 'brotli', 'certifi'] + collect_submodules('websockets')
-    excluded_modules = ['test', 'ytdlp_plugins', 'youtube-dl', 'youtube-dlc']
+    # Due to the current implementation, these are auto-detected, but explicitly add them just in case
+    dependencies = [pycryptodome_module(), 'mutagen', 'brotli', 'certifi', 'websockets']
+    excluded_modules = ('youtube_dl', 'youtube_dlc', 'test', 'ytdlp_plugins', 'devscripts')
 
     yield from (f'--hidden-import={module}' for module in dependencies)
+    yield '--collect-submodules=websockets'
     yield from (f'--exclude-module={module}' for module in excluded_modules)
 
 
@@ -96,13 +103,24 @@ def pycryptodome_module():
 
 
 def set_version_info(exe, version):
-    if OS_NAME == 'Windows':
+    if OS_NAME == 'win32':
         windows_set_version(exe, version)
 
 
 def windows_set_version(exe, version):
+    from PyInstaller.utils.win32.versioninfo import (
+        FixedFileInfo,
+        SetVersion,
+        StringFileInfo,
+        StringStruct,
+        StringTable,
+        VarFileInfo,
+        VarStruct,
+        VSVersionInfo,
+    )
+
     version_list = version_to_list(version)
-    suffix = '_x86' if ARCH == '32' else ''
+    suffix = MACHINE and f'_{MACHINE}'
     SetVersion(exe, VSVersionInfo(
         ffi=FixedFileInfo(
             filevers=version_list,
@@ -116,9 +134,9 @@ def windows_set_version(exe, version):
         ),
         kids=[
             StringFileInfo([StringTable('040904B0', [
-                StringStruct('Comments', 'yt-dlp%s Command Line Interface.' % suffix),
+                StringStruct('Comments', 'yt-dlp%s Command Line Interface' % suffix),
                 StringStruct('CompanyName', 'https://github.com/yt-dlp'),
-                StringStruct('FileDescription', 'yt-dlp%s' % (' (32 Bit)' if ARCH == '32' else '')),
+                StringStruct('FileDescription', 'yt-dlp%s' % (MACHINE and f' ({MACHINE})')),
                 StringStruct('FileVersion', version),
                 StringStruct('InternalName', f'yt-dlp{suffix}'),
                 StringStruct('LegalCopyright', 'pukkandan.ytdlp@gmail.com | UNLICENSE'),

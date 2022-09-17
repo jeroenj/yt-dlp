@@ -1,89 +1,107 @@
 #!/usr/bin/env python3
-# coding: utf-8
-
-from __future__ import unicode_literals
 
 # Allow direct execution
 import os
 import sys
 import unittest
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
-# Various small unit tests
+import contextlib
 import io
 import itertools
 import json
 import xml.etree.ElementTree
 
+from yt_dlp.compat import (
+    compat_etree_fromstring,
+    compat_HTMLParseError,
+    compat_os_name,
+)
 from yt_dlp.utils import (
+    Config,
+    DateRange,
+    ExtractorError,
+    InAdvancePagedList,
+    LazyList,
+    OnDemandPagedList,
     age_restricted,
     args_to_str,
-    encode_base_n,
+    base_url,
     caesar,
     clean_html,
     clean_podcast_url,
-    Config,
+    cli_bool_option,
+    cli_option,
+    cli_valueless_option,
     date_from_str,
     datetime_from_str,
-    DateRange,
     detect_exe_version,
     determine_ext,
+    determine_file_encoding,
+    dfxp2srt,
     dict_get,
+    encode_base_n,
     encode_compat_str,
     encodeFilename,
     escape_rfc3986,
     escape_url,
+    expand_path,
     extract_attributes,
-    ExtractorError,
     find_xpath_attr,
     fix_xml_ampersands,
-    format_bytes,
     float_or_none,
-    get_element_by_class,
+    format_bytes,
+    get_compatible_ext,
     get_element_by_attribute,
-    get_elements_by_class,
-    get_elements_by_attribute,
-    get_element_html_by_class,
+    get_element_by_class,
     get_element_html_by_attribute,
-    get_elements_html_by_class,
-    get_elements_html_by_attribute,
-    get_elements_text_and_html_by_attribute,
+    get_element_html_by_class,
     get_element_text_and_html_by_tag,
-    InAdvancePagedList,
+    get_elements_by_attribute,
+    get_elements_by_class,
+    get_elements_html_by_attribute,
+    get_elements_html_by_class,
+    get_elements_text_and_html_by_attribute,
     int_or_none,
     intlist_to_bytes,
+    iri_to_uri,
     is_html,
     js_to_json,
     limit_length,
+    locked_file,
+    lowercase_escape,
+    match_str,
     merge_dicts,
     mimetype2ext,
     month_by_name,
     multipart_encode,
     ohdave_rsa_encrypt,
-    OnDemandPagedList,
     orderedSet,
     parse_age_limit,
+    parse_bitrate,
+    parse_codecs,
+    parse_count,
+    parse_dfxp_time_expr,
     parse_duration,
     parse_filesize,
-    parse_count,
     parse_iso8601,
-    parse_resolution,
-    parse_bitrate,
     parse_qs,
+    parse_resolution,
     pkcs1pad,
+    prepend_extension,
     read_batch_urls,
+    remove_end,
+    remove_quotes,
+    remove_start,
+    render_table,
+    replace_extension,
+    rot47,
     sanitize_filename,
     sanitize_path,
     sanitize_url,
     sanitized_Request,
-    expand_path,
-    prepend_extension,
-    replace_extension,
-    remove_start,
-    remove_end,
-    remove_quotes,
-    rot47,
     shell_quote,
     smuggle_url,
     str_to_int,
@@ -95,38 +113,18 @@ from yt_dlp.utils import (
     unified_strdate,
     unified_timestamp,
     unsmuggle_url,
+    update_url_query,
     uppercase_escape,
-    lowercase_escape,
     url_basename,
     url_or_none,
-    base_url,
-    urljoin,
     urlencode_postdata,
+    urljoin,
     urshift,
-    update_url_query,
     version_tuple,
-    xpath_with_ns,
+    xpath_attr,
     xpath_element,
     xpath_text,
-    xpath_attr,
-    render_table,
-    match_str,
-    parse_dfxp_time_expr,
-    dfxp2srt,
-    cli_option,
-    cli_valueless_option,
-    cli_bool_option,
-    parse_codecs,
-    iri_to_uri,
-    LazyList,
-)
-from yt_dlp.compat import (
-    compat_chr,
-    compat_etree_fromstring,
-    compat_getenv,
-    compat_HTMLParseError,
-    compat_os_name,
-    compat_setenv,
+    xpath_with_ns,
 )
 
 
@@ -142,13 +140,13 @@ class TestUtil(unittest.TestCase):
 
         self.assertEqual(sanitize_filename('123'), '123')
 
-        self.assertEqual('abc_de', sanitize_filename('abc/de'))
+        self.assertEqual('abc⧸de', sanitize_filename('abc/de'))
         self.assertFalse('/' in sanitize_filename('abc/de///'))
 
-        self.assertEqual('abc_de', sanitize_filename('abc/<>\\*|de'))
-        self.assertEqual('xxx', sanitize_filename('xxx/<>\\*|'))
-        self.assertEqual('yes no', sanitize_filename('yes? no'))
-        self.assertEqual('this - that', sanitize_filename('this: that'))
+        self.assertEqual('abc_de', sanitize_filename('abc/<>\\*|de', is_id=False))
+        self.assertEqual('xxx', sanitize_filename('xxx/<>\\*|', is_id=False))
+        self.assertEqual('yes no', sanitize_filename('yes? no', is_id=False))
+        self.assertEqual('this - that', sanitize_filename('this: that', is_id=False))
 
         self.assertEqual(sanitize_filename('AT&T'), 'AT&T')
         aumlaut = 'ä'
@@ -265,15 +263,22 @@ class TestUtil(unittest.TestCase):
 
     def test_expand_path(self):
         def env(var):
-            return '%{0}%'.format(var) if sys.platform == 'win32' else '${0}'.format(var)
+            return f'%{var}%' if sys.platform == 'win32' else f'${var}'
 
-        compat_setenv('yt_dlp_EXPATH_PATH', 'expanded')
+        os.environ['yt_dlp_EXPATH_PATH'] = 'expanded'
         self.assertEqual(expand_path(env('yt_dlp_EXPATH_PATH')), 'expanded')
-        self.assertEqual(expand_path(env('HOME')), compat_getenv('HOME'))
-        self.assertEqual(expand_path('~'), compat_getenv('HOME'))
-        self.assertEqual(
-            expand_path('~/%s' % env('yt_dlp_EXPATH_PATH')),
-            '%s/expanded' % compat_getenv('HOME'))
+
+        old_home = os.environ.get('HOME')
+        test_str = R'C:\Documents and Settings\тест\Application Data'
+        try:
+            os.environ['HOME'] = test_str
+            self.assertEqual(expand_path(env('HOME')), os.getenv('HOME'))
+            self.assertEqual(expand_path('~'), os.getenv('HOME'))
+            self.assertEqual(
+                expand_path('~/%s' % env('yt_dlp_EXPATH_PATH')),
+                '%s/expanded' % os.getenv('HOME'))
+        finally:
+            os.environ['HOME'] = old_home or ''
 
     def test_prepend_extension(self):
         self.assertEqual(prepend_extension('abc.ext', 'temp'), 'abc.temp.ext')
@@ -364,6 +369,7 @@ class TestUtil(unittest.TestCase):
         self.assertEqual(unified_strdate('2012/10/11 01:56:38 +0000'), '20121011')
         self.assertEqual(unified_strdate('1968 12 10'), '19681210')
         self.assertEqual(unified_strdate('1968-12-10'), '19681210')
+        self.assertEqual(unified_strdate('31-07-2022 20:00'), '20220731')
         self.assertEqual(unified_strdate('28/01/2014 21:00:00 +0100'), '20140128')
         self.assertEqual(
             unified_strdate('11/26/2014 11:30:00 AM PST', day_first=False),
@@ -406,6 +412,10 @@ class TestUtil(unittest.TestCase):
         self.assertEqual(unified_timestamp('Sep 11, 2013 | 5:49 AM'), 1378878540)
         self.assertEqual(unified_timestamp('December 15, 2017 at 7:49 am'), 1513324140)
         self.assertEqual(unified_timestamp('2018-03-14T08:32:43.1493874+00:00'), 1521016363)
+
+        self.assertEqual(unified_timestamp('December 31 1969 20:00:01 EDT'), 1)
+        self.assertEqual(unified_timestamp('Wednesday 31 December 1969 18:01:26 MDT'), 86)
+        self.assertEqual(unified_timestamp('12/31/1969 20:01:18 EDT', False), 78)
 
     def test_determine_ext(self):
         self.assertEqual(determine_ext('http://example.com/foo/bar.mp4/?download'), 'mp4')
@@ -537,9 +547,6 @@ class TestUtil(unittest.TestCase):
         self.assertEqual(str_to_int('123,456'), 123456)
         self.assertEqual(str_to_int('123.456'), 123456)
         self.assertEqual(str_to_int(523), 523)
-        # Python 3 has no long
-        if sys.version_info < (3, 0):
-            eval('self.assertEqual(str_to_int(123456L), 123456)')
         self.assertEqual(str_to_int('noninteger'), None)
         self.assertEqual(str_to_int([]), None)
 
@@ -559,6 +566,7 @@ class TestUtil(unittest.TestCase):
         self.assertEqual(base_url('http://foo.de/bar/'), 'http://foo.de/bar/')
         self.assertEqual(base_url('http://foo.de/bar/baz'), 'http://foo.de/bar/')
         self.assertEqual(base_url('http://foo.de/bar/baz?x=z/x/c'), 'http://foo.de/bar/')
+        self.assertEqual(base_url('http://foo.de/bar/baz&x=z&w=y/x/c'), 'http://foo.de/bar/baz&x=z&w=y/x/')
 
     def test_urljoin(self):
         self.assertEqual(urljoin('http://foo.de/', '/a/b/c.txt'), 'http://foo.de/a/b/c.txt')
@@ -668,8 +676,7 @@ class TestUtil(unittest.TestCase):
             def get_page(pagenum):
                 firstid = pagenum * pagesize
                 upto = min(size, pagenum * pagesize + pagesize)
-                for i in range(firstid, upto):
-                    yield i
+                yield from range(firstid, upto)
 
             pl = OnDemandPagedList(get_page, pagesize)
             got = pl.getslice(*sliceargs)
@@ -738,7 +745,7 @@ class TestUtil(unittest.TestCase):
             multipart_encode({b'field': b'value'}, boundary='AAAAAA')[0],
             b'--AAAAAA\r\nContent-Disposition: form-data; name="field"\r\n\r\nvalue\r\n--AAAAAA--\r\n')
         self.assertEqual(
-            multipart_encode({'欄位'.encode('utf-8'): '值'.encode('utf-8')}, boundary='AAAAAA')[0],
+            multipart_encode({'欄位'.encode(): '值'.encode()}, boundary='AAAAAA')[0],
             b'--AAAAAA\r\nContent-Disposition: form-data; name="\xe6\xac\x84\xe4\xbd\x8d"\r\n\r\n\xe5\x80\xbc\r\n--AAAAAA--\r\n')
         self.assertRaises(
             ValueError, multipart_encode, {b'field': b'value'}, boundary='value')
@@ -896,7 +903,7 @@ class TestUtil(unittest.TestCase):
             'dynamic_range': 'HDR10',
         })
         self.assertEqual(parse_codecs('av01.0.12M.10.0.110.09.16.09.0'), {
-            'vcodec': 'av01.0.12M.10',
+            'vcodec': 'av01.0.12M.10.0.110.09.16.09.0',
             'acodec': 'none',
             'dynamic_range': 'HDR10',
         })
@@ -1126,7 +1133,7 @@ class TestUtil(unittest.TestCase):
         self.assertEqual(extract_attributes('<e x="décompose&#769;">'), {'x': 'décompose\u0301'})
         # "Narrow" Python builds don't support unicode code points outside BMP.
         try:
-            compat_chr(0x10000)
+            chr(0x10000)
             supports_outside_bmp = True
         except ValueError:
             supports_outside_bmp = False
@@ -1399,7 +1406,7 @@ ffmpeg version 2.4.4 Copyright (c) 2000-2014 the FFmpeg ...'''), '2.4.4')
                     <p begin="3" dur="-1">Ignored, three</p>
                 </div>
             </body>
-            </tt>'''.encode('utf-8')
+            </tt>'''.encode()
         srt_data = '''1
 00:00:00,000 --> 00:00:01,000
 The following line contains Chinese characters and special symbols
@@ -1417,14 +1424,14 @@ Line
 '''
         self.assertEqual(dfxp2srt(dfxp_data), srt_data)
 
-        dfxp_data_no_default_namespace = '''<?xml version="1.0" encoding="UTF-8"?>
+        dfxp_data_no_default_namespace = b'''<?xml version="1.0" encoding="UTF-8"?>
             <tt xml:lang="en" xmlns:tts="http://www.w3.org/ns/ttml#parameter">
             <body>
                 <div xml:lang="en">
                     <p begin="0" end="1">The first line</p>
                 </div>
             </body>
-            </tt>'''.encode('utf-8')
+            </tt>'''
         srt_data = '''1
 00:00:00,000 --> 00:00:01,000
 The first line
@@ -1432,7 +1439,7 @@ The first line
 '''
         self.assertEqual(dfxp2srt(dfxp_data_no_default_namespace), srt_data)
 
-        dfxp_data_with_style = '''<?xml version="1.0" encoding="utf-8"?>
+        dfxp_data_with_style = b'''<?xml version="1.0" encoding="utf-8"?>
 <tt xmlns="http://www.w3.org/2006/10/ttaf1" xmlns:ttp="http://www.w3.org/2006/10/ttaf1#parameter" ttp:timeBase="media" xmlns:tts="http://www.w3.org/2006/10/ttaf1#style" xml:lang="en" xmlns:ttm="http://www.w3.org/2006/10/ttaf1#metadata">
   <head>
     <styling>
@@ -1450,7 +1457,7 @@ The first line
       <p style="s1" tts:textDecoration="underline" begin="00:00:09.56" id="p2" end="00:00:12.36"><span style="s2" tts:color="lime">inner<br /> </span>style</p>
     </div>
   </body>
-</tt>'''.encode('utf-8')
+</tt>'''
         srt_data = '''1
 00:00:02,080 --> 00:00:05,840
 <font color="white" face="sansSerif" size="16">default style<font color="red">custom style</font></font>
@@ -1757,7 +1764,7 @@ Line 1
 
         def test(ll, idx, val, cache):
             self.assertEqual(ll[idx], val)
-            self.assertEqual(getattr(ll, '_LazyList__cache'), list(cache))
+            self.assertEqual(ll._cache, list(cache))
 
         ll = LazyList(range(10))
         test(ll, 0, 0, range(1))
@@ -1794,6 +1801,78 @@ Line 1
                          ['-u', 'PRIVATE', '-u', 'PRIVATE'])
         self.assertEqual(Config.hide_login_info(['--username=foo']),
                          ['--username=PRIVATE'])
+
+    def test_locked_file(self):
+        TEXT = 'test_locked_file\n'
+        FILE = 'test_locked_file.ytdl'
+        MODES = 'war'  # Order is important
+
+        try:
+            for lock_mode in MODES:
+                with locked_file(FILE, lock_mode, False) as f:
+                    if lock_mode == 'r':
+                        self.assertEqual(f.read(), TEXT * 2, 'Wrong file content')
+                    else:
+                        f.write(TEXT)
+                    for test_mode in MODES:
+                        testing_write = test_mode != 'r'
+                        try:
+                            with locked_file(FILE, test_mode, False):
+                                pass
+                        except (BlockingIOError, PermissionError):
+                            if not testing_write:  # FIXME
+                                print(f'Known issue: Exclusive lock ({lock_mode}) blocks read access ({test_mode})')
+                                continue
+                            self.assertTrue(testing_write, f'{test_mode} is blocked by {lock_mode}')
+                        else:
+                            self.assertFalse(testing_write, f'{test_mode} is not blocked by {lock_mode}')
+        finally:
+            with contextlib.suppress(OSError):
+                os.remove(FILE)
+
+    def test_determine_file_encoding(self):
+        self.assertEqual(determine_file_encoding(b''), (None, 0))
+        self.assertEqual(determine_file_encoding(b'--verbose -x --audio-format mkv\n'), (None, 0))
+
+        self.assertEqual(determine_file_encoding(b'\xef\xbb\xbf'), ('utf-8', 3))
+        self.assertEqual(determine_file_encoding(b'\x00\x00\xfe\xff'), ('utf-32-be', 4))
+        self.assertEqual(determine_file_encoding(b'\xff\xfe'), ('utf-16-le', 2))
+
+        self.assertEqual(determine_file_encoding(b'\xff\xfe# coding: utf-8\n--verbose'), ('utf-16-le', 2))
+
+        self.assertEqual(determine_file_encoding(b'# coding: utf-8\n--verbose'), ('utf-8', 0))
+        self.assertEqual(determine_file_encoding(b'# coding: someencodinghere-12345\n--verbose'), ('someencodinghere-12345', 0))
+
+        self.assertEqual(determine_file_encoding(b'#coding:utf-8\n--verbose'), ('utf-8', 0))
+        self.assertEqual(determine_file_encoding(b'#  coding:   utf-8   \r\n--verbose'), ('utf-8', 0))
+
+        self.assertEqual(determine_file_encoding('# coding: utf-32-be'.encode('utf-32-be')), ('utf-32-be', 0))
+        self.assertEqual(determine_file_encoding('# coding: utf-16-le'.encode('utf-16-le')), ('utf-16-le', 0))
+
+    def test_get_compatible_ext(self):
+        self.assertEqual(get_compatible_ext(
+            vcodecs=[None], acodecs=[None, None], vexts=['mp4'], aexts=['m4a', 'm4a']), 'mkv')
+        self.assertEqual(get_compatible_ext(
+            vcodecs=[None], acodecs=[None], vexts=['flv'], aexts=['flv']), 'flv')
+
+        self.assertEqual(get_compatible_ext(
+            vcodecs=[None], acodecs=[None], vexts=['mp4'], aexts=['m4a']), 'mp4')
+        self.assertEqual(get_compatible_ext(
+            vcodecs=[None], acodecs=[None], vexts=['mp4'], aexts=['webm']), 'mkv')
+        self.assertEqual(get_compatible_ext(
+            vcodecs=[None], acodecs=[None], vexts=['webm'], aexts=['m4a']), 'mkv')
+        self.assertEqual(get_compatible_ext(
+            vcodecs=[None], acodecs=[None], vexts=['webm'], aexts=['webm']), 'webm')
+
+        self.assertEqual(get_compatible_ext(
+            vcodecs=['h264'], acodecs=['mp4a'], vexts=['mov'], aexts=['m4a']), 'mp4')
+        self.assertEqual(get_compatible_ext(
+            vcodecs=['av01.0.12M.08'], acodecs=['opus'], vexts=['mp4'], aexts=['webm']), 'webm')
+
+        self.assertEqual(get_compatible_ext(
+            vcodecs=['vp9'], acodecs=['opus'], vexts=['webm'], aexts=['webm'], preferences=['flv', 'mp4']), 'mp4')
+        self.assertEqual(get_compatible_ext(
+            vcodecs=['av1'], acodecs=['mp4a'], vexts=['webm'], aexts=['m4a'], preferences=('webm', 'mkv')), 'mkv')
 
 
 if __name__ == '__main__':

@@ -1,6 +1,3 @@
-# coding: utf-8
-from __future__ import unicode_literals
-
 import random
 import re
 import time
@@ -24,7 +21,8 @@ from ..utils import (
 
 
 class BandcampIE(InfoExtractor):
-    _VALID_URL = r'https?://[^/]+\.bandcamp\.com/track/(?P<id>[^/?#&]+)'
+    _VALID_URL = r'https?://(?P<uploader>[^/]+)\.bandcamp\.com/track/(?P<id>[^/?#&]+)'
+    _EMBED_REGEX = [r'<meta property="og:url"[^>]*?content="(?P<url>.*?bandcamp\.com.*?)"']
     _TESTS = [{
         'url': 'http://youtube-dl.bandcamp.com/track/youtube-dl-test-song',
         'md5': 'c557841d5e50261777a6585648adf439',
@@ -87,7 +85,7 @@ class BandcampIE(InfoExtractor):
             attr + ' data', group=2), video_id, fatal=fatal)
 
     def _real_extract(self, url):
-        title = self._match_id(url)
+        title, uploader = self._match_valid_url(url).group('id', 'uploader')
         webpage = self._download_webpage(url, title)
         tralbum = self._extract_data_attr(webpage, title)
         thumbnail = self._og_search_thumbnail(webpage)
@@ -199,6 +197,8 @@ class BandcampIE(InfoExtractor):
             'title': title,
             'thumbnail': thumbnail,
             'uploader': artist,
+            'uploader_id': uploader,
+            'uploader_url': f'https://{uploader}.bandcamp.com',
             'timestamp': timestamp,
             'release_timestamp': unified_timestamp(tralbum.get('album_release_date')),
             'duration': duration,
@@ -439,7 +439,7 @@ class BandcampUserIE(InfoExtractor):
         uploader = self._match_id(url)
         webpage = self._download_webpage(url, uploader)
 
-        discography_data = (re.findall(r'<li data-item-id=["\'][^>]+>\s*<a href=["\']([^"\']+)', webpage)
+        discography_data = (re.findall(r'<li data-item-id=["\'][^>]+>\s*<a href=["\'](?![^"\'/]*?/merch)([^"\']+)', webpage)
                             or re.findall(r'<div[^>]+trackTitle["\'][^"\']+["\']([^"\']+)', webpage))
 
         return self.playlist_from_matches(
